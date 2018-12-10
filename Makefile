@@ -1,15 +1,37 @@
 .PHONY: build clean test all release gen-mocks check-mockery verify-docs clean-docs
 
-OUTPUT = ./riff
-GO_SOURCES = $(shell find . -type f -name '*.go')
-VERSION ?= $(shell cat VERSION)
+ISWIN:=
+ifeq ($(OS),Windows_NT)
+	ISWIN=true
+    OUTPUT = .\riff
+    OUTPUT_EXT = .exe
+	VERSION = $(shell type VERSION)
+	GITDIRTY = $(shell git diff --quiet HEAD || echo dirty)
+	GOBIN = $(shell go env GOPATH)\bin
+	MOCKERY_CHECK_CMD = where mockery > NUL || (echo mockery not found: issue "go get -u github.com/vektra/mockery/.../" && exit 1)
+	COPY_CMD = copy
+	FILE_DELETE_CMD = del /f /q 2>NUL
+	DIR_DELETE_CMD = rmdir /s /q 2>NUL
+	TOUCH_FILE_CMD = copy /y nul
+else
+	ISWIN=false
+	OUTPUT = ./riff
+    OUTPUT_EXT =
+	VERSION ?= $(shell cat VERSION)
+	GITDIRTY = $(shell git diff --quiet HEAD || echo "dirty")
+	GOBIN ?= $(shell go env GOPATH)/bin
+	MOCKERY_CHECK_CMD = @which mockery > /dev/null || (echo mockery not found: issue "go get -u github.com/vektra/mockery/.../" && false)
+	COPY_CMD = cp
+	FILE_DELETE_CMD = rm -f
+	DIR_DELETE_CMD = rm -fR
+	TOUCH_FILE_CMD = touch
+endif
+
 GITSHA = $(shell git rev-parse HEAD)
-GITDIRTY = $(shell git diff --quiet HEAD || echo "dirty")
 LDFLAGS_VERSION = -X github.com/projectriff/riff/pkg/env.cli_name=riff \
 				  -X github.com/projectriff/riff/pkg/env.cli_version=$(VERSION) \
 				  -X github.com/projectriff/riff/pkg/env.cli_gitsha=$(GITSHA) \
 				  -X github.com/projectriff/riff/pkg/env.cli_gitdirty=$(GITDIRTY)
-GOBIN ?= $(shell go env GOPATH)/bin
 
 all: build test docs
 
@@ -19,7 +41,7 @@ test:
 	go test ./...
 
 check-mockery:
-	@which mockery > /dev/null || (echo mockery not found: issue "go get -u github.com/vektra/mockery/.../" && false)
+	$(MOCKERY_CHECK_CMD)
 
 gen-mocks: check-mockery
 	mockery -output pkg/core/mocks/mockbuilder			-outpkg mockbuilder			-dir pkg/core 																					-name Builder
@@ -37,15 +59,21 @@ gen-mocks: check-mockery
 	mockery -output pkg/fileutils/mocks					-outpkg mocks				-dir pkg/fileutils																				-name Copier
 
 install: build
-	cp $(OUTPUT) $(GOBIN)
+	$(COPY_CMD) $(OUTPUT)$(OUTPUT_EXT) $(GOBIN)
 
-$(OUTPUT): $(GO_SOURCES) vendor VERSION
-	go build -o $(OUTPUT) -ldflags "$(LDFLAGS_VERSION)"
+$(OUTPUT): vendor VERSION
+	go build -o $(OUTPUT)$(OUTPUT_EXE) -ldflags "$(LDFLAGS_VERSION)"
 
-release: $(GO_SOURCES) vendor VERSION
+release: vendor VERSION
+ifeq ($(ISWIN),true)
+	cmd /C "set GOOS=windows&&set GOARCH=amd64&& go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT)$(OUTPUT_EXT) && 7z a -tzip riff-windows-amd64.zip $(OUTPUT)$(OUTPUT_EXT) && del /q $(OUTPUT)$(OUTPUT_EXT)"
+	cmd /C "set GOOS=darwin&&set GOARCH=amd64&& go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT) && 7z a -ttar riff-darwin-amd64.tar $(OUTPUT) && 7z a -tzip riff-darwin-amd64.tgz riff-darwin-amd64.tar && del /q riff-darwin-amd64.tar && del /q $(OUTPUT)"
+	cmd /C "set GOOS=linux&&set GOARCH=amd64&& go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT) && 7z a -ttar riff-linux-amd64.tar $(OUTPUT) && 7z a -tzip riff-linux-amd64.tgz riff-linux-amd64.tar && del /q riff-linux-amd64.tar && del /q $(OUTPUT)"
+else	
 	GOOS=darwin   GOARCH=amd64 go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT)     && tar -czf riff-darwin-amd64.tgz $(OUTPUT) && rm -f $(OUTPUT)
 	GOOS=linux    GOARCH=amd64 go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT)     && tar -czf riff-linux-amd64.tgz $(OUTPUT) && rm -f $(OUTPUT)
-	GOOS=windows  GOARCH=amd64 go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT).exe && zip -mq riff-windows-amd64.zip $(OUTPUT).exe && rm -f $(OUTPUT).exe
+	GOOS=windows  GOARCH=amd64 go build -ldflags "$(LDFLAGS_VERSION)" -o $(OUTPUT)$(OUTPUT_EXT) && zip -mq riff-windows-amd64.zip $(OUTPUT)$(OUTPUT_EXT) && rm -f $(OUTPUT)$(OUTPUT_EXT)
+endif
 
 docs: $(OUTPUT) clean-docs
 	$(OUTPUT) docs
@@ -54,17 +82,18 @@ verify-docs: docs
 	git diff --exit-code docs
 
 clean-docs:
-	rm -fR docs
+	$(DIR_DELETE_CMD) docs
 
 clean:
-	rm -f $(OUTPUT)
-	rm -f riff-darwin-amd64.tgz
-	rm -f riff-linux-amd64.tgz
-	rm -f riff-windows-amd64.zip
+	$(FILE_DELETE_CMD) $(OUTPUT)$(OUTPUT_EXT)
+	$(FILE_DELETE_CMD) riff-darwin-amd64.tgz
+	$(FILE_DELETE_CMD) riff-linux-amd64.tgz
+	$(FILE_DELETE_CMD) riff-windows-amd64.zip
 
 vendor: Gopkg.lock
-	dep ensure -vendor-only && touch vendor
+	dep ensure -vendor-only && $(TOUCH_FILE_CMD) vendor
 
 Gopkg.lock: Gopkg.toml
-	dep ensure -no-vendor && touch Gopkg.lock
+	dep ensure -no-vendor && $(TOUCH_FILE_CMD) Gopkg.lock
+
 
